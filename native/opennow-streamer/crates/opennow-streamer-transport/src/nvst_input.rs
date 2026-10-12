@@ -51,6 +51,7 @@ const INPUT_GAMEPAD: u32 = 12;
 const INPUT_HAPTICS_ENABLED: u32 = 13;
 const INPUT_LOCK_KEYS_SYNC: u32 = 19;
 const INPUT_TEXT: u32 = 23;
+const INPUT_MOUSE_SETTINGS: u32 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NvstChannelReliability {
@@ -1146,7 +1147,7 @@ fn text_keystroke(character: char) -> Option<(u16, u16)> {
     Some((virtual_key, 1))
 }
 
-fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 8] {
+fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 9] {
     [
         enable_input(1, false),
         device_descriptor(timestamp_us, 0),
@@ -1156,7 +1157,27 @@ fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 8] {
         state_change(COMMAND_SYSTEM_STATE, 0, 0),
         enable_input(1, true),
         haptics_state(true, timestamp_us).bytes,
+        // The official client logs "Sending SDL mouse settings (accel=0, speed=10)" at session
+        // start and on every focus change. Without it the host keeps Windows pointer
+        // acceleration on top of the client's motion, which games that draw their own cursor
+        // (CK3 and other strategy games) turn into a floaty, lagging pointer.
+        mouse_settings(false, HOST_MOUSE_SPEED, timestamp_us).bytes,
     ]
+}
+
+/// Windows' neutral pointer speed (the middle of its 1-20 slider), as the official client sends.
+const HOST_MOUSE_SPEED: u32 = 10;
+
+/// Remote input type 25, `NvstMouseSettingsEvent_t`: acceleration flag and pointer speed as two
+/// big-endian u32. Layout from OpenNOW-Mac's `NvstRemoteInput.mouseSettings`.
+fn mouse_settings(acceleration: bool, speed: u32, timestamp_us: u64) -> NvstEncodedInput {
+    let mut body = Vec::with_capacity(8);
+    body.extend_from_slice(&u32::from(acceleration).to_be_bytes());
+    body.extend_from_slice(&speed.to_be_bytes());
+    remote_input_message(
+        remote_input_packet(INPUT_MOUSE_SETTINGS, &body),
+        timestamp_us,
+    )
 }
 
 fn mouse_cursor_capture(enabled: bool) -> Vec<u8> {
@@ -1625,6 +1646,13 @@ mod tests {
             chain[7],
             hex(
                 "06022800000000240e000000000000060d0000000100000000000000000000000000000031bc320100000000"
+            )
+        );
+        // Mouse settings: type 25 {acceleration=0, speed=10} as big-endian u32s, enveloped.
+        assert_eq!(
+            chain[8],
+            hex(
+                "06022800000000240e0000000000000c19000000000000000000000a000000000000000031bc320100000000"
             )
         );
     }

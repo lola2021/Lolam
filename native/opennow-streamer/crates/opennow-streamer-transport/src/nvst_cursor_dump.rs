@@ -7,7 +7,8 @@
 //! a complete bitmap.
 //!
 //! Only cursor notifications (and a few messages right after a bitmap, in case its pixels are
-//! split across messages) are written. The file is capped, and identical payloads are written once.
+//! split across messages) are written. The file is capped. Identical bitmap payloads are written
+//! once; small system-cursor notifications are all written, in order, as a timeline.
 
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -112,8 +113,8 @@ impl DumpState {
         }
     }
 
-    fn record(&mut self, kind: &str, channel: &str, detail: &str, bytes: &[u8]) {
-        if !self.seen.insert(fingerprint(bytes)) {
+    fn record(&mut self, kind: &str, channel: &str, detail: &str, bytes: &[u8], dedupe: bool) {
+        if dedupe && !self.seen.insert(fingerprint(bytes)) {
             return;
         }
         if !self.ensure_file() {
@@ -160,7 +161,7 @@ pub(crate) fn record_data_channel_message(
         !has_bitmap && bytes.len() >= 4 && bytes[..2] == BITMAP_CURSOR_CODE;
 
     if is_cursor_channel {
-        guard.record("cursor-channel", channel, "", bytes);
+        guard.record("cursor-channel", channel, "", bytes, true);
     } else if has_bitmap || leading_partial_bitmap {
         let commands = cursor_commands
             .iter()
@@ -172,7 +173,7 @@ pub(crate) fn record_data_channel_message(
         } else {
             "bitmap-partial"
         };
-        guard.record(kind, channel, &format!("commands={commands}"), bytes);
+        guard.record(kind, channel, &format!("commands={commands}"), bytes, true);
         guard.follow_remaining = FOLLOW_MESSAGES;
         return;
     } else if !cursor_commands.is_empty() {
@@ -181,13 +182,31 @@ pub(crate) fn record_data_channel_message(
             .map(|(command, offset)| format!("0x{command:04x}@{offset}"))
             .collect::<Vec<_>>()
             .join(",");
-        guard.record("system", channel, &format!("commands={commands}"), bytes);
+        guard.record(
+            "system",
+            channel,
+            &format!("commands={commands}"),
+            bytes,
+            false,
+        );
     }
 
     if guard.follow_remaining > 0 {
         guard.follow_remaining -= 1;
-        guard.record("follow", channel, "", bytes);
+        guard.record("follow", channel, "", bytes, true);
     }
+}
+
+/// Writes a free-form marker (e.g. which activation commands were sent) into the timeline.
+pub(crate) fn record_note(note: &str) {
+    let Ok(mut guard) = state().lock() else {
+        return;
+    };
+    if !guard.ensure_file() {
+        return;
+    }
+    let line = format!("{} note {note}\n", now_ms());
+    guard.write_raw(&line);
 }
 
 #[cfg(test)]
@@ -200,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn bitmaps_are_written_in_full_once_with_following_messages() {
+    fn bitmaps_are_written_once_and_system_cursors_as_a_timeline() {
         let mut directory = std::env::temp_dir();
         directory.push(format!("opennow-cursor-dump-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
@@ -222,6 +241,14 @@ mod tests {
         assert!(body.contains(&hex(&bitmap)));
         assert!(body.contains("kind=follow channel=control  bytes=2 hex=aabb"));
         assert!(body.contains("hex=0102"));
+
+        let system = [0x0f, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00];
+        record_data_channel_message("control", &system, &[(0x010f, 0)], false);
+        record_data_channel_message("control", &system, &[(0x010f, 0)], false);
+        record_note("activation mouseSettings=sent");
+        let body = std::fs::read_to_string(directory.join("cursor-capture.log")).unwrap();
+        assert_eq!(body.matches("kind=system").count(), 2, "{body}");
+        assert!(body.contains(" note activation mouseSettings=sent"));
         let _ = std::fs::remove_dir_all(&directory);
     }
 

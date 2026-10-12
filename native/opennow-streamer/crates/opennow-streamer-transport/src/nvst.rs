@@ -6104,6 +6104,9 @@ fn finish_nvst_input_handshake(
             ));
             return false;
         }
+        crate::nvst_cursor_dump::record_note(
+            "input-activation sent: cursorCapture=on cursorTracking=on mouseSettings=accel0,speed10",
+        );
         eprintln!(
             "NVST cursor capture tx: channel={} command=0x0308 enabled=true reason=input-activation",
             channels.label(channels.control_reliable),
@@ -6613,6 +6616,7 @@ fn run_nvst_webrtc_bundle(
                 CursorCommand::Tracking => channels.send_remote_cursor_tracking(&mut rtc, true),
             })
         {
+            crate::nvst_cursor_dump::record_note("server cursor compositing off (0x0308=0 sent)");
             let _ = event_sender.send(NvstReceiveEvent::CursorCapture(false));
         }
         if upstream_allowed
