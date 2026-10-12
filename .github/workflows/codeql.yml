@@ -26,6 +26,8 @@ jobs:
     #   - https://gh.io/supported-runners-and-hardware-resources
     #   - https://gh.io/using-larger-runners (GitHub.com only)
     # Consider using larger runners or machines with greater resources for possible analysis time improvements.
+    # Blacksmith runners only exist for the upstream organisation; elsewhere this would queue forever.
+    if: github.repository_owner == 'OpenCloudGaming'
     runs-on: ${{ (matrix.language == 'swift' && 'blacksmith-6vcpu-macos-latest') || 'blacksmith-2vcpu-ubuntu-2404' }}
     permissions:
       # required for all workflows

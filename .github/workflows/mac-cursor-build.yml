@@ -1,0 +1,99 @@
+name: macOS cursor build
+
+# Unsigned Apple Silicon DMG built on GitHub-hosted runners (upstream's qt-build.yml uses
+# Blacksmith runners, which are unavailable outside OpenCloudGaming). No update key is pinned, so
+# the app cannot auto-update itself away from this build.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "cursor/**"
+    paths:
+      - ".github/workflows/mac-cursor-build.yml"
+      - "native/**"
+      - "opennow-qt/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-cursor-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 150
+    env:
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      SDL_VERSION: release-3.2.20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtmultimedia qtshadertools
+          cache: true
+          cache-key-prefix: qt-target-macos-arm64
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: mac-cursor-build
+          cache-bin: false
+          cache-on-failure: true
+          workspaces: |
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: arm64
+          parallel: 3
+
+      - name: Cursor transport tests
+        run: |
+          cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked \
+            -p opennow-streamer-transport cursor
+
+      - name: Configure and build
+        run: |
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DOPENNOW_MACOS_ADHOC_SIGN=ON \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
+          cmake --build build/opennow-qt-release --parallel 3
+
+      - name: Package DMG
+        run: |
+          mkdir -p build/qt-packages
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -G DragNDrop -B build/qt-packages
+          ls -la build/qt-packages
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNOW-macos-arm64-${{ github.sha }}
+          path: build/qt-packages/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

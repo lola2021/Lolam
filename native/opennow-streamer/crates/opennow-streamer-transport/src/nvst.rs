@@ -7047,6 +7047,18 @@ fn run_nvst_webrtc_bundle(
                             } else {
                                 server_cursor_messages(&data.data)
                             };
+                            {
+                                let commands = cursor_messages
+                                    .iter()
+                                    .map(|message| (message.command, message.offset))
+                                    .collect::<Vec<_>>();
+                                crate::nvst_cursor_dump::record_data_channel_message(
+                                    label,
+                                    &data.data,
+                                    &commands,
+                                    Some(data.id) == channels.cursor,
+                                );
+                            }
                             for message in cursor_messages {
                                 cursor_capture.notify(Instant::now());
                                 eprintln!(
