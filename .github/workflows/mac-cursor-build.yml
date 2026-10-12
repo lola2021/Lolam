@@ -1,6 +1,6 @@
 name: macOS cursor build
 
-# Unsigned Apple Silicon DMG built on GitHub-hosted runners (upstream's qt-build.yml uses
+# Unsigned Apple Silicon DMG, uploaded as an Actions artifact, built on GitHub-hosted runners (upstream's qt-build.yml uses
 # Blacksmith runners, which are unavailable outside OpenCloudGaming). No update key is pinned, so
 # the app cannot auto-update itself away from this build.
 
@@ -16,7 +16,7 @@ on:
       - "opennow-qt/**"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: mac-cursor-build-${{ github.ref }}
@@ -33,8 +33,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 50
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -94,25 +92,9 @@ jobs:
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: OpenNOW-macos-arm64-${{ github.sha }}
+          name: OpenNOW-macos-arm64-${{ github.ref_name == 'main' && 'main' || 'branch' }}-${{ github.run_number }}
           path: build/qt-packages/*.dmg
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
           compression-level: 0
 
-      - name: Publish release
-        # Builds of the default branch become a downloadable release; branch builds stay artifacts.
-        if: github.ref_name == github.event.repository.default_branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          upstream=$(git log --format=%s -n 200 | sed -n 's/^chore: sync upstream OpenNOW .*(\([0-9a-f]*\))$/\1/p' | head -1)
-          tag="cursor-build-${GITHUB_RUN_NUMBER}"
-          {
-            echo "Unsigned Apple Silicon build of \`${GITHUB_SHA:0:8}\`${upstream:+ (upstream \`$upstream\`)}."
-            echo
-            echo "First launch: right-click OpenNOW.app → Open, or allow it in System Settings → Privacy & Security."
-          } > "$RUNNER_TEMP/notes.md"
-          gh release create "$tag" build/qt-packages/*.dmg \
-            --target "$GITHUB_SHA" --title "OpenNOW cursor build ${GITHUB_RUN_NUMBER}" \
-            --notes-file "$RUNNER_TEMP/notes.md" --latest
