@@ -1,0 +1,132 @@
+name: Sync upstream OpenNOW
+
+# Merges OpenCloudGaming/OpenNOW into this repo's default branch so the cursor changes stay on top
+# of every upstream release, then starts the macOS build.
+#
+#   - `upstream` branch: exact mirror of the upstream branch below (never edit it by hand).
+#   - default branch:    upstream + this repo's changes, kept with a regular merge (no rebases).
+#
+# A merge conflict stops the sync and opens an issue labelled `upstream-sync`; nothing is pushed.
+#
+# Token: GitHub's built-in token cannot push commits that change `.github/workflows/*`, and
+# upstream edits its workflows often. Add a fine-grained personal access token for this repo with
+# "Contents: Read and write" and "Workflows: Read and write" as the secret SYNC_TOKEN. Without it,
+# syncs that touch upstream workflows fail with an issue explaining why.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: Upstream branch to follow (main = stable releases, dev = nightlies)
+        default: main
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/OpenCloudGaming/OpenNOW.git
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
+  HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          upstream_sha=$(git rev-parse FETCH_HEAD)
+          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo "Already contains upstream $UPSTREAM_BRANCH at $upstream_sha"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.fetch.outputs.changed == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit -m "chore: sync upstream OpenNOW ${UPSTREAM_BRANCH} (${UPSTREAM_SHA:0:8})" "$UPSTREAM_SHA"; then
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$HAS_SYNC_TOKEN" != true ]] \
+            && git diff --name-only ORIG_HEAD HEAD | grep -q '^\.github/workflows/'; then
+            echo "result=needs-token" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "result=merged" >> "$GITHUB_OUTPUT"
+
+      - name: Cursor transport tests
+        if: steps.merge.outputs.result == 'merged'
+        # Only the transport crate: it holds the cursor code and needs no SDL/Vulkan libraries.
+        run: |
+          cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked \
+            -p opennow-streamer-transport cursor
+
+      - name: Push
+        if: steps.merge.outputs.result == 'merged'
+        run: git push --atomic origin "HEAD:refs/heads/${GITHUB_REF_NAME}" "${{ steps.fetch.outputs.sha }}:refs/heads/upstream"
+
+      - name: Start macOS build
+        # Pushes made with the built-in token do not trigger other workflows; dispatch explicitly.
+        if: steps.merge.outputs.result == 'merged' && env.HAS_SYNC_TOKEN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run mac-cursor-build.yml --ref "$GITHUB_REF_NAME"
+
+      - name: Report problem
+        if: steps.merge.outputs.result == 'conflict' || steps.merge.outputs.result == 'needs-token'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.merge.outputs.result }}
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.sha }}
+        run: |
+          gh label create upstream-sync --color d93f0b --description "Automatic upstream sync needs attention" 2>/dev/null || true
+          {
+            echo "Upstream \`$UPSTREAM_BRANCH\` is at [\`${UPSTREAM_SHA:0:8}\`](https://github.com/OpenCloudGaming/OpenNOW/commit/$UPSTREAM_SHA) and could not be merged automatically. Nothing was pushed."
+            echo
+            if [[ "$RESULT" == conflict ]]; then
+              echo "Files with conflicts:"
+              echo
+              sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+              echo
+              echo "Resolve by merging \`upstream\` into the default branch by hand (or ask your assistant to)."
+            else
+              echo "Upstream changed files under \`.github/workflows/\`, which GitHub's built-in token is not allowed to push."
+              echo "Add a fine-grained token for this repo with **Contents** and **Workflows** read/write as the secret \`SYNC_TOKEN\`, then re-run this workflow."
+            fi
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/body.md"
+          existing=$(gh issue list --label upstream-sync --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "Upstream sync needs attention" --label upstream-sync --body-file "$RUNNER_TEMP/body.md"
+          fi
+          exit 1

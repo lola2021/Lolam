@@ -102,9 +102,16 @@ public:
     Q_INVOKABLE void requestFrame();
     Q_INVOKABLE void resynchronizeInput();
     Q_INVOKABLE void togglePointerLock();
+    // Hides the local pointer while keeping the current mouse mode, for games that hide the
+    // host cursor and draw their own into the video. Returns the new state.
+    Q_INVOKABLE bool toggleLocalCursorHidden();
 
     [[nodiscard]] static QRect aspectFitRect(const QSize &videoSize,
                                               const QSize &targetSize);
+    // Stream pixels per viewport point on each axis, so relative motion moves a host-drawn
+    // cursor as far as the local pointer would have moved. (1, 1) when either size is unknown.
+    [[nodiscard]] static QPointF relativeMotionScale(const QSize &videoSize,
+                                                     const QSize &viewportSize);
     [[nodiscard]] static QRect scaledCaptureRect(const QRectF &itemRect,
                                                  const QSizeF &windowSize,
                                                  const QRect &clientScreenRect);
@@ -234,6 +241,8 @@ private:
     QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;
     std::optional<bool> m_manualRelativeMouse;
+    bool m_hideLocalCursor = false;
+    QString m_lastCaptureTrace;
 };
 
 void registerStreamVideoItemQmlType();

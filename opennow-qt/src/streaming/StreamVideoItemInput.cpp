@@ -3,8 +3,12 @@
 #include "input/platform/WaylandPointerCapture.h"
 #include "input/platform/MacPointerCapture.h"
 #include "streaming/NativeStreamRuntime.h"
+#include "diagnostics/DiagnosticsPaths.h"
 
 #include <QCursor>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QClipboard>
 #include <QFocusEvent>
 #include <QGuiApplication>
@@ -37,6 +41,32 @@ class NativeGameplayKeyEvent final : public QKeyEvent
 public:
     explicit NativeGameplayKeyEvent(const QKeyEvent &event) : QKeyEvent(event) {}
 };
+
+// Local cursor-ownership timeline in diagnostics/cursor-qt.log, next to the transport's
+// cursor-capture.log. Mode and visibility transitions only: no input, positions or payloads.
+void cursorTrace(const QString &line)
+{
+    static int written = 0;
+    if (written >= 5000) return;
+    const auto root = coreDiagnosticsDataRoot();
+    if (root.isEmpty()) return;
+    QDir directory(root);
+    if (!directory.mkpath(QStringLiteral("diagnostics"))) return;
+    QFile file(directory.filePath(QStringLiteral("diagnostics/cursor-qt.log")));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) return;
+    ++written;
+    file.write(QByteArray::number(QDateTime::currentMSecsSinceEpoch()) + ' ' + line.toUtf8() + '\n');
+}
+
+QString flag(bool value)
+{
+    return value ? QStringLiteral("1") : QStringLiteral("0");
+}
+
+QString optionalText(const std::optional<bool> &value)
+{
+    return value ? (*value ? QStringLiteral("on") : QStringLiteral("off")) : QStringLiteral("auto");
+}
 }
 
 bool StreamVideoItem::eventFilter(QObject *watched, QEvent *event)
@@ -778,6 +808,7 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
     QQuickItem::itemChange(change, data);
     if (change == ItemVisibleHasChanged && !isVisible()) {
         m_manualRelativeMouse.reset();
+        m_hideLocalCursor = false;
         resetRemoteCursor();
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange)
@@ -927,6 +958,7 @@ void StreamVideoItem::syncCaptureState()
     }
     if (m_usesMacPointerCapture) {
         const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));
+        m_macPointer->setMotionScale(relativeMotionScale(m_videoSize, viewport.size()));
         m_macPointer->setCapture(window(), desired && m_relativeMouse,
                                  mapRectToScene(QRectF(viewport)).toAlignedRect());
         if (m_relativeMouse) desired = desired && m_macPointer->locked();
@@ -954,6 +986,19 @@ void StreamVideoItem::syncCaptureState()
     }
     updateCursorConfinement();
     updateLocalCursor();
+    const auto traceState = QStringLiteral("capture=%1 relative=%2 macLocked=%3 macError=%4 rawInput=%5")
+        .arg(flag(m_captureActive), flag(m_relativeMouse),
+             flag(m_usesMacPointerCapture && m_macPointer->locked()))
+        .arg(m_usesMacPointerCapture && !m_macPointer->error().isEmpty()
+                 ? QStringLiteral("\"%1\"").arg(m_macPointer->error()) : QStringLiteral("none"))
+        .arg(flag(m_rawInputActive));
+    if (traceState != m_lastCaptureTrace) {
+        m_lastCaptureTrace = traceState;
+        cursorTrace(QStringLiteral("sync %1 inputEnabled=%2 focus=%3 windowActive=%4 inputAllowed=%5")
+            .arg(traceState, flag(m_inputEnabled), flag(hasActiveFocus()),
+                 flag(window() && window()->isActive()),
+                 flag(s_nativeRuntime && s_nativeRuntime->inputAllowed())));
+    }
     if (changed) emit captureActiveChanged();
 }
 
@@ -1062,6 +1107,9 @@ void StreamVideoItem::setRelativeMouse(bool relative)
     // the button owner and pointer coordinates stable until the physical release.
     // Focus loss/overlays still release everything through releaseInput().
     if (!m_pressedMouseButtons.isEmpty()) {
+        if (m_pendingRelativeMouse != relative)
+            cursorTrace(QStringLiteral("relative=%1 deferred until %2 held button(s) release")
+                .arg(flag(relative)).arg(qlonglong(m_pressedMouseButtons.size())));
         m_pendingRelativeMouse = relative;
         return;
     }
@@ -1100,7 +1148,8 @@ void StreamVideoItem::updateLocalCursor()
         unsetCursor();
         return;
     }
-    if (m_relativeMouse || (m_serverCursorComposited && m_manualRelativeMouse != false)) {
+    if (m_relativeMouse || m_hideLocalCursor
+        || (m_serverCursorComposited && m_manualRelativeMouse != false)) {
         setCursor(Qt::BlankCursor);
         return;
     }
@@ -1117,9 +1166,20 @@ void StreamVideoItem::resetRemoteCursor()
     updateLocalCursor();
 }
 
+bool StreamVideoItem::toggleLocalCursorHidden()
+{
+    m_hideLocalCursor = !m_hideLocalCursor;
+    cursorTrace(QStringLiteral("local pointer %1 by shortcut")
+        .arg(m_hideLocalCursor ? QStringLiteral("hidden") : QStringLiteral("shown")));
+    updateLocalCursor();
+    return m_hideLocalCursor;
+}
+
 void StreamVideoItem::togglePointerLock()
 {
     m_manualRelativeMouse = !m_relativeMouse;
+    cursorTrace(QStringLiteral("pointer lock override=%1 by shortcut")
+        .arg(optionalText(m_manualRelativeMouse)));
     releaseInput();
     setRelativeMouse(*m_manualRelativeMouse);
     syncCaptureState();
@@ -1136,6 +1196,11 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     const auto metadata = remoteCursorMetadata(bytes);
     m_remoteCursorKnown = true;
     m_remoteCursorVisible = !hidden;
+    cursorTrace(QStringLiteral("server cursor type=%1 id=%2 hidden=%3 override=%4 heldButtons=%5 relativeBefore=%6")
+        .arg(int(messageType)).arg(int(cursorId))
+        .arg(flag(hidden), optionalText(m_manualRelativeMouse))
+        .arg(qlonglong(m_pressedMouseButtons.size()))
+        .arg(flag(m_relativeMouse)));
     setRelativeMouse(m_manualRelativeMouse.value_or(hidden));
     updateLocalCursor();
     if (hidden) return;

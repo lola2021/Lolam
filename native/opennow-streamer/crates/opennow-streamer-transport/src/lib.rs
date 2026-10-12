@@ -11,6 +11,7 @@ mod nvst_bandwidth;
 mod nvst_budget;
 mod nvst_control;
 mod nvst_cursor;
+mod nvst_cursor_dump;
 mod nvst_haptics;
 mod nvst_input;
 mod nvst_microphone;

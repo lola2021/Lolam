@@ -125,6 +125,11 @@ FocusScope {
         function onPointerLockToggleRequested() {
             streamVideo.togglePointerLock()
         }
+        function onLocalCursorToggleRequested() {
+            ShellStore.streamControlMessage = streamVideo.toggleLocalCursorHidden()
+                ? qsTr("Mac pointer hidden") : qsTr("Mac pointer shown")
+            ShellStore.accessibilityMessage = ShellStore.streamControlMessage
+        }
     }
 
     ScreenBackground {

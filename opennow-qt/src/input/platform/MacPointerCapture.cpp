@@ -30,6 +30,7 @@ struct MacPointerCapture::Private
     QMetaObject::Connection destroyed;
     QRect region;
     QPointF remainder;
+    QPointF motionScale{1.0, 1.0};
     QString error;
     bool locked = false;
     bool disassociated = false;
@@ -196,6 +197,23 @@ void MacPointerCapture::release()
     if (wasLocked || d->error != previousError) emit stateChanged();
 }
 
+void MacPointerCapture::setMotionScale(const QPointF &scale)
+{
+    // Reject nonsense (empty viewport, unknown video size) rather than freezing or flinging
+    // the pointer; the bounds cover every stream/window ratio a real session produces.
+    constexpr double minimum = 0.25;
+    constexpr double maximum = 8.0;
+    const auto valid = [](double value) {
+        return std::isfinite(value) && value >= minimum && value <= maximum;
+    };
+    d->motionScale = valid(scale.x()) && valid(scale.y()) ? scale : QPointF(1.0, 1.0);
+}
+
+QPointF MacPointerCapture::motionScale() const
+{
+    return d->motionScale;
+}
+
 void MacPointerCapture::motion(const QPointF &delta)
 {
     Q_ASSERT(QThread::currentThread() == qApp->thread());
@@ -206,7 +224,8 @@ void MacPointerCapture::motion(const QPointF &delta)
         fail(QStringLiteral("The native mouse event contained an invalid relative delta."));
         return;
     }
-    const QPointF sum = d->remainder + delta;
+    const QPointF sum = d->remainder
+        + QPointF(delta.x() * d->motionScale.x(), delta.y() * d->motionScale.y());
     int x = int(sum.x());
     int y = int(sum.y());
     d->remainder = sum - QPointF(x, y);

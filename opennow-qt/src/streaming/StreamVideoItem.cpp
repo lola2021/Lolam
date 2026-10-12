@@ -82,6 +82,7 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         connect(s_nativeRuntime, &NativeStreamRuntime::runningChanged, this, [this] {
             if (!s_nativeRuntime || !s_nativeRuntime->running()) {
                 m_manualRelativeMouse.reset();
+                m_hideLocalCursor = false;
                 resetRemoteCursor();
             }
             syncCaptureState();
@@ -137,6 +138,11 @@ void StreamVideoItem::setVideoSize(const QSize &size)
     const auto normalized = size.isValid() && !size.isEmpty() ? size : QSize{};
     if (m_videoSize == normalized) return;
     m_videoSize = normalized;
+    if (m_usesMacPointerCapture) {
+        m_macPointer->setMotionScale(relativeMotionScale(
+            m_videoSize,
+            aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height()))).size()));
+    }
     emit videoSizeChanged();
     update();
 }
@@ -387,6 +393,15 @@ void StreamVideoItem::requestFrame()
         return;
     }
     update();
+}
+
+QPointF StreamVideoItem::relativeMotionScale(const QSize &videoSize, const QSize &viewportSize)
+{
+    if (!videoSize.isValid() || videoSize.isEmpty() || !viewportSize.isValid()
+        || viewportSize.isEmpty())
+        return {1.0, 1.0};
+    return {static_cast<double>(videoSize.width()) / viewportSize.width(),
+            static_cast<double>(videoSize.height()) / viewportSize.height()};
 }
 
 QRect StreamVideoItem::aspectFitRect(const QSize &videoSize, const QSize &targetSize)

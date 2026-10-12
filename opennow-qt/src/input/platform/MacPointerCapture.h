@@ -32,6 +32,11 @@ public:
     [[nodiscard]] QString error() const;
     void setCapture(QWindow *window, bool enabled, const QRect &windowRegion);
     void release();
+    // Multiplies native deltas before they are split into relative packets. AppKit reports
+    // motion in window points while the host moves its cursor in stream pixels; the stream item
+    // sets stream pixels per viewport point so a game-drawn cursor tracks like the Mac pointer.
+    void setMotionScale(const QPointF &scale);
+    [[nodiscard]] QPointF motionScale() const;
 
 signals:
     void stateChanged();

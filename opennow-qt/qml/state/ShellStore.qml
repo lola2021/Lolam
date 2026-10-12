@@ -794,6 +794,7 @@ QtObject {
 
     signal fullscreenToggleRequested()
     signal pointerLockToggleRequested()
+    signal localCursorToggleRequested()
     signal streamCaptureAnnounced(string message)
     readonly property var resumableSession: {
         if (root.activeSession) {
@@ -2469,6 +2470,7 @@ QtObject {
         return {
             "guide": ["Ctrl+G"],
             "toggle-pointer-lock": [String(settings.shortcutTogglePointerLock ?? "F8")],
+            "toggle-local-cursor": ["Ctrl+Shift+C"],
             "toggle-fullscreen": [String(settings.shortcutToggleFullscreen ?? "F11")],
             "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
             "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
@@ -2535,6 +2537,8 @@ QtObject {
             fullscreenToggleRequested()
         } else if (action === "toggle-pointer-lock") {
             pointerLockToggleRequested()
+        } else if (action === "toggle-local-cursor") {
+            localCursorToggleRequested()
         } else if (action === "screenshot") {
             captureStreamScreenshot()
         } else if (action === "toggle-recording") {
